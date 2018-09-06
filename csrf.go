@@ -23,9 +23,14 @@ import (
 	"github.com/Unknwon/com"
 	"github.com/go-macaron/session"
 	"gopkg.in/macaron.v1"
+	"os"
 )
 
 const _VERSION = "0.1.0"
+
+// the cookie to store token for GET routes.
+var GetRouteCookieName = os.Getenv("CSRF_GET_ROUTE_COOKIE_NAME")
+var GetRouteHashKey = os.Getenv("CSRF_GET_ROUTE_HASH_KEY")
 
 func Version() string {
 	return _VERSION
@@ -45,8 +50,11 @@ type CSRF interface {
 	GetCookieHttpOnly() bool
 	// Return the token.
 	GetToken() string
+	GetExtraToken() string
 	// Validate by token.
 	ValidToken(t string) bool
+	// Validate by token on GET routes (eg /logout)
+	ValidExtraToken(t string) bool
 	// Error replies to the request with a custom function when ValidToken fails.
 	Error(w http.ResponseWriter)
 }
@@ -64,6 +72,8 @@ type csrf struct {
 	CookieHttpOnly bool
 	// Token generated to pass via header, cookie, or hidden form value.
 	Token string
+	// ExtraToken
+	ExtraToken string
 	// This value must be unique per user.
 	ID string
 	// Secret used along with the unique id above to generate the Token.
@@ -103,9 +113,16 @@ func (c *csrf) GetToken() string {
 	return c.Token
 }
 
+func (c *csrf) GetExtraToken() string {
+	return c.ExtraToken
+}
 // ValidToken validates the passed token against the existing Secret and ID.
 func (c *csrf) ValidToken(t string) bool {
 	return ValidToken(t, c.Secret, c.ID, "POST")
+}
+// ValidExtraToken validates the passed token against the existing Secret and ID.
+func (c *csrf) ValidExtraToken(t string) bool {
+	return ValidToken(t, GetRouteHashKey, c.ID, "GET")
 }
 
 // Error replies to the request when ValidToken fails.
@@ -150,7 +167,7 @@ func prepareOptions(options []Options) Options {
 
 	// Defaults.
 	if len(opt.Secret) == 0 {
-		opt.Secret = string(com.RandomCreateBytes(10))
+		opt.Secret = string(com.RandomCreateBytes(32))
 	}
 	if len(opt.Header) == 0 {
 		opt.Header = "X-CSRFToken"
@@ -210,9 +227,11 @@ func Generate(options ...Options) macaron.Handler {
 			sess.Set(opt.oldSeesionKey, x.ID)
 		} else {
 			// If cookie present, map existing token, else generate a new one.
-			if val := ctx.GetCookie(opt.Cookie); len(val) > 0 {
+			extraVal := ctx.GetCookie(GetRouteCookieName)
+			if val := ctx.GetCookie(opt.Cookie); len(val) > 0 && len(extraVal) > 0 {
 				// FIXME: test coverage.
 				x.Token = val
+				x.ExtraToken = extraVal
 			} else {
 				needsNew = true
 			}
@@ -221,8 +240,10 @@ func Generate(options ...Options) macaron.Handler {
 		if needsNew {
 			// FIXME: actionId.
 			x.Token = GenerateToken(x.Secret, x.ID, "POST")
+			x.ExtraToken = GenerateToken(GetRouteHashKey, x.ID, "GET")
 			if opt.SetCookie {
 				ctx.SetCookie(opt.Cookie, x.Token, 0, opt.CookiePath, "", opt.Secure, opt.CookieHttpOnly, time.Now().AddDate(0, 0, 1))
+				ctx.SetCookie(GetRouteCookieName, x.ExtraToken, 0, opt.CookiePath, "", opt.Secure, opt.CookieHttpOnly, time.Now().AddDate(0, 0, 1))
 			}
 		}
 
